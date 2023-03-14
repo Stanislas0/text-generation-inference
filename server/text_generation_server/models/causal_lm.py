@@ -45,7 +45,7 @@ class CausalLMBatch(Batch):
     padding_right_offset: int
 
     # Past metadata
-    keys_head_dim_last: bool = True
+    keys_head_dim_last: bool = False
 
     def to_pb(self) -> generate_pb2.Batch:
         return generate_pb2.Batch(
@@ -203,14 +203,13 @@ class CausalLMBatch(Batch):
                 # Shenanigans to get dimensions because BLOOM outputs a past with a different shape
                 # BLOOM Keys:   [batch_size * num_heads, head_dim, seq_length]
                 # BLOOM Values: [batch_size * num_heads, seq_length, head_dim]
-                past_keys = past_keys.view(batch.size, -1, *past_keys.shape[-2:])
-                past_values = past_values.view(batch.size, -1, *past_values.shape[-2:])
+                past_keys = past_keys.view(batch.size, *past_keys.shape[-2:])
+                past_values = past_values.view(batch.size, *past_values.shape[-2:])
 
-                _, num_heads, padded_sequence_length, head_dim = past_values.shape
+                _, padded_sequence_length, head_dim = past_values.shape
 
                 padded_past_values_shape = (
                     total_batch_size,
-                    num_heads,
                     max_sequence_length - 1,
                     head_dim,
                 )
@@ -218,10 +217,8 @@ class CausalLMBatch(Batch):
                 if batch.keys_head_dim_last:
                     padded_past_keys_shape = padded_past_values_shape
                 else:
-                    # seq_length is last for BLOOM
                     padded_past_keys_shape = (
                         total_batch_size,
-                        num_heads,
                         head_dim,
                         max_sequence_length - 1,
                     )
@@ -233,24 +230,29 @@ class CausalLMBatch(Batch):
                     past_key_values.append((padded_past_keys, padded_past_values))
 
                 # We slice the past keys and values to remove the padding from previous batches
+                # print(f"Causal_lm: start_index {start_index}, end_index {end_index}")
+                # print(f"Causal_lm: batch.max_sequence_length {batch.max_sequence_length}")
+                # print("Causal_lm: past_key_values 0", past_key_values[j][0].shape)
+                # print("Causal_lm: past_key_values 1", past_key_values[j][1].shape)
+                # print("Causal_lm: past_keys", past_keys.shape)
+                # print("Causal_lm: past_values", past_values.shape)
+                
                 if batch.keys_head_dim_last:
                     past_key_values[j][0][
                         start_index:end_index,
-                        :,
                         -(batch.max_sequence_length - 1) :,
                         :,
-                    ] = past_keys[:, :, -(batch.max_sequence_length - 1) :, :]
+                    ] = past_keys[:, :, -(batch.max_sequence_length - 1) :]
                 else:
                     past_key_values[j][0][
                         start_index:end_index,
                         :,
-                        :,
                         -(batch.max_sequence_length - 1) :,
-                    ] = past_keys[:, :, :, -(batch.max_sequence_length - 1) :]
+                    ] = past_keys[:, :, -(batch.max_sequence_length - 1) :]
 
                 past_key_values[j][1][
-                    start_index:end_index, :, -(batch.max_sequence_length - 1) :, :
-                ] = past_values[:, :, -(batch.max_sequence_length - 1) :, :]
+                    start_index:end_index, -(batch.max_sequence_length - 1) :, :
+                ] = past_values[:, -(batch.max_sequence_length - 1) :, :]
 
             start_index += batch.size
 
@@ -470,7 +472,7 @@ class CausalLM(Model):
             # Force past to be of dim [batch_size, num_heads, ...] for easy indexing
             next_batch_past_key_values = [
                 [
-                    t.view(batch.size, -1, *t.shape[-2:])[next_batch_keep_indices]
+                    t.view(batch.size, *t.shape[-2:])[next_batch_keep_indices]
                     for t in layer
                 ]
                 for layer in past
